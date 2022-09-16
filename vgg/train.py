@@ -19,6 +19,7 @@ from tqdm.autonotebook import tqdm
 
 # from torchinfo import summary
 import visdom
+import wandb
 
 import utils
 
@@ -37,7 +38,7 @@ def train(model: nn.Module,
             optimizer: torch.optim.Optimizer,
             loss_fn: Callable,
             train_dl: DataLoader,
-            val_dl: DataLoader,
+            val_dl: DataLoader | None,
             grad_accum=1,
             start_epoch=1):
     """Training loop
@@ -130,6 +131,14 @@ def train(model: nn.Module,
                 iter_metrics["train_loss"].append(loss.item())
                 iter_metrics["train_acc"].append(acc)
 
+                wandb.log({
+                    "epoch" : epoch,
+                    "batch" : batch,
+                    "train_loss" : loss,
+                    "train_acc" : acc
+                })
+
+
                 n_train_batches = batch
                 n_train_correct += n_correct(y_hat, y).item()
                 n_train_samples += y.shape[0]
@@ -146,6 +155,12 @@ def train(model: nn.Module,
         epoch_metrics["epoch"].append(epoch)
         epoch_metrics["train_loss"].append(epoch_train_loss / (n_train_batches + 1))
         epoch_metrics["train_acc"].append(n_train_correct / n_train_samples)
+
+        wandb.log({
+            "epoch" : epoch,
+            "train_loss" : epoch_train_loss / (n_train_batches + 1),
+            "train_acc" : n_train_correct / n_train_samples
+        })
 
         train_end_time = time.time()
 
@@ -172,6 +187,11 @@ def train(model: nn.Module,
 
             epoch_metrics["val_loss"].append(epoch_val_loss / (n_val_batches + 1))
             epoch_metrics["val_acc"].append(n_val_correct / n_val_samples)
+            wandb.log({
+                "epoch" : epoch,
+                "val_loss" : epoch_val_loss / (n_val_batches + 1),
+                "val_acc" : n_val_correct / n_val_samples
+            })
 
 
         # # batch_pbar.close()
@@ -181,6 +201,13 @@ def train(model: nn.Module,
         epoch_metrics["time"].append(tqdm.format_interval(val_end_time - start_time))
         epoch_metrics["train_time"].append(tqdm.format_interval(train_end_time - start_time))
         epoch_metrics["val_time"].append(tqdm.format_interval(val_end_time - train_end_time))
+
+        wandb.log({
+            "epoch" : epoch,
+            "time" : epoch_metrics["time"][-1],
+            "train_time" : epoch_metrics["train_time"][-1],
+            "val_time": epoch_metrics["val_time"][-1],
+        })
 
         epoch_pbar.update()
 
