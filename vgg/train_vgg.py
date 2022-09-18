@@ -46,7 +46,6 @@ config = Config(
     # init="paper_normal",
     # init="pytorch",
     init="paper_glorot",
-
     dropout=0.,
 
     # Optimizer
@@ -58,7 +57,9 @@ config = Config(
     momentum=0.9,
 
     bs=256,
-    # grad_accum=1,
+    grad_accum=1,
+    fp16=True,
+    grad_scaling=True,
     # bs=32,
     epochs=100,
 
@@ -129,6 +130,12 @@ parser_optim.add_argument("--val_bs", type=int, metavar="N",
     help="Valudation Batch size (default: bs*2)")
 parser_optim.add_argument("--grad_accum", type=int, default=config.grad_accum, metavar="N",
     help="Split batches into N chunks, forward/back-prob on at a time, optimizer step once")
+parser_optim.add_argument("--fp16", type=bool, default=config.fp16,
+    action=argparse.BooleanOptionalAction,
+    help="Use Automatic Mixed Precision")
+parser_optim.add_argument("--grad_scaling", type=bool, default=config.grad_scaling,
+    action=argparse.BooleanOptionalAction,
+    help="Use Gradient Scaling")
 parser_optim.add_argument("--overfit_batches", type=int, metavar="N",
     default=config.overfit_batches,
     help="Overfit on N batches (from the dataset) instead of trainig. 0 Means train normally")
@@ -179,9 +186,8 @@ if utils.is_notebook():
 else:
     args = parser.parse_args()
 
-
 if not args.wandb:
-    args.wandb_mode = "disabled"
+    args["wandb_mode"] = "disabled"
 
 run = wandb.init(config=args, project=args.wandb_project, name=args.wandb_run, mode=args.wandb_mode)
 config = wandb.config
@@ -197,23 +203,17 @@ if "val_bs" not in config:
     config.val_bs = (config.bs // config.grad_accum)*2
 
 
-# wandb.finish()
-# os.exit(0)
-
 vis = None
 if config.visdom:
     raise NotImplementedError
     # vis = visdom.Visdom()
 
-args.bs = args.bs // args.grad_accum
 if config.dataset == "MNIST":
     train_dl, val_dl = datasets.get_mnist_dataloaders(
                                     data_dir=config.data_dir,
                                     bs=config.bs // config.grad_accum,
                                     val_bs=config.val_bs,
-
                                     resize=config.resize,
-
                                     overfit_batches=config.overfit_batches,
                                     overfit_len=config.overfit_len)
 
@@ -244,7 +244,6 @@ model.to(device)
 
 # We need to figure out the lazy layer sizes before init.
 model(torch.randn((1, *data_shape)).to(device))
-
 
 with torch.no_grad():
     if config.init == "paper_normal":
@@ -286,7 +285,9 @@ epoch_metrics, iter_metrics = train.train(model=model,
                                             loss_fn=criterion,
                                             train_dl=train_dl,
                                             val_dl=val_dl,
-                                            grad_accum=config.grad_accum)
+                                            grad_accum=config.grad_accum,
+                                            fp16=config.fp16,
+                                            grad_scaling=config.grad_scaling)
 
 wandb.finish()
 

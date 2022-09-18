@@ -1,10 +1,10 @@
+"""Utility functions"""
 # %%
-from collections import defaultdict
-import torchvision
-from torchvision.utils import make_grid
+# import torchvision
+# from torchvision.utils import make_grid
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw, ImageFont, ImageColor
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt
 import torch
 
 
@@ -63,22 +63,24 @@ def metrics_last_pretty(metrics):
 # %%
 
 def annotate_image(x, y, pred=None, idx2class=None, font=None, font_size=11):
+    """Pad image with some whitespace and put the lable/prediciton in there"""
     y = int(y)
-    if pred != None:
+    if pred is not None:
         pred = int(pred)
 
     if font:
-        font = ImageFont.truetype()
+        font = ImageFont.truetype(font, size=font_size)
+    else:
+        font = ImageFont.load_default()
 
-    font = ImageFont.load_default()
-    font_h = font.getbbox("A")[-1]
+    font_h = font.getbbox("A")[-1]   # type: ignore
 
     red = ImageColor.getrgb("#c71f12")
     green = ImageColor.getrgb("#0e8c27")
     black = ImageColor.getrgb("black")
     white = ImageColor.getrgb("white")
 
-    pad_h = (font_h + 2) * (2 if pred != None else 1)
+    pad_h = (font_h + 2) * (2 if pred is not None else 1)
 
     x = TF.to_pil_image(x)
     x_padded = Image.new(x.mode, (x.width, x.height + pad_h), color=white)
@@ -87,7 +89,7 @@ def annotate_image(x, y, pred=None, idx2class=None, font=None, font_size=11):
     draw = ImageDraw.Draw(x_padded)
 
     pred_text = ""
-    if pred != None:
+    if pred is not None:
         pred_text = str(pred)
     text = str(y)
 
@@ -96,7 +98,7 @@ def annotate_image(x, y, pred=None, idx2class=None, font=None, font_size=11):
         text += ":" + idx2class[y]
 
     draw.text(xy=(2, 2), text=text, fill=black)
-    if pred != None:
+    if pred is not None:
         if pred == y:
             fill = green
         else:
@@ -108,7 +110,7 @@ def annotate_image(x, y, pred=None, idx2class=None, font=None, font_size=11):
 
 
 def annotate_batch(X, Y, preds=None, idx2class=None, font=None, font_size=11):
-
+    """Annotate the whole batch"""
     # def _lambda((x, y, pred)):
     #     return annotate_image(x, y, pred, idx2class=idx2class)
 
@@ -122,7 +124,7 @@ def annotate_batch(X, Y, preds=None, idx2class=None, font=None, font_size=11):
                     font=font,
                     font_size=font_size)
 
-    if preds != None:
+    if preds is not None:
         return torch.stack([ _lambda((x, y, pred)) for x, y, pred in zip(X, Y, preds) ])
     else:
         return torch.stack([ _lambda((x, y, None)) for x, y in zip(X, Y) ])

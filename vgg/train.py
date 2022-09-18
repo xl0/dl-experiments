@@ -9,11 +9,15 @@ from typing import Callable
 # from logging.config import valid_ident
 # from types import SimpleNamespace
 
+# import contextlib
 import torch
 import torch.nn as nn
 # import torch.nn.functional as F
 from torch.utils.data import DataLoader
-# import torchvision
+from torch.cuda.amp.autocast_mode import autocast
+from torch.cuda.amp.grad_scaler import GradScaler
+# import torchvis
+# ion
 
 from tqdm.autonotebook import tqdm
 
@@ -33,6 +37,8 @@ def n_correct(y_hat, y):
     """
     return (y_hat.argmax(dim=-1) == y).int().sum()
 
+# %%
+
 def train(model: nn.Module,
             epochs: int,
             optimizer: torch.optim.Optimizer,
@@ -40,7 +46,9 @@ def train(model: nn.Module,
             train_dl: DataLoader,
             val_dl: DataLoader | None,
             grad_accum=1,
-            start_epoch=1):
+            start_epoch=1,
+            fp16=False,
+            grad_scaling=False):
     """Training loop
 
     Args:
@@ -69,7 +77,6 @@ def train(model: nn.Module,
     # iter_metrics["train_loss"]
     # iter_metrics["train_acc"]
 
-
     wandb.define_metric("step_*", step_metric="_step")
     wandb.define_metric("*", step_metric="epoch")
 
@@ -81,6 +88,13 @@ def train(model: nn.Module,
     # Just in case
     optimizer.zero_grad()
     step = 0
+
+    # if not fp16:
+    #     atc = contextlib.nullcontext
+    # else:
+    #     atc = autocast
+
+    scaler = GradScaler(enabled=grad_scaling)
 
     # We only run a small piece with torch.enable_grad()
 
@@ -110,10 +124,11 @@ def train(model: nn.Module,
                 y = y.to(device)
 
                 with torch.enable_grad():
-                    y_hat = model(X)
-                    loss = loss_fn(y_hat, y)
-                    loss = loss / grad_accum
-                    loss.backward()
+                    with autocast(enabled=fp16):
+                        y_hat = model(X)
+                        loss = loss_fn(y_hat, y)
+                        loss = loss / grad_accum
+                    scaler.scale(loss).backward()  # type: ignore
 
                 # Accumulate batch metrics
                 virt_batch_loss += loss.item()
@@ -123,7 +138,11 @@ def train(model: nn.Module,
                 if (batch+1) % grad_accum == 0 or (batch+1) == len(train_dl):
                     step += 1
                     # batch_pbar.write(f"batch {batch}, step {step}")
-                    optimizer.step()
+                    scaler.step(optimizer)
+
+                    grad_scale = scaler.get_scale()
+                    scaler.update()
+                    # optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
 
                     virt_batch_acc = virt_batch_correct / virt_batch_samples
@@ -133,15 +152,14 @@ def train(model: nn.Module,
                     n_train_correct += virt_batch_correct
                     n_train_samples += virt_batch_samples
 
-
                     iter_stats = {
                         "epoch" : epoch,
                         "batch" : (batch + 1) // grad_accum,
                         "step" : step,
                         "step_train_loss" : virt_batch_loss,
-                        "step_train_acc" : virt_batch_acc
+                        "step_train_acc" : virt_batch_acc,
+                        "step_grad_scale" : grad_scale
                     }
-
 
                     wandb.log(iter_stats, step=step)
 
@@ -176,7 +194,7 @@ def train(model: nn.Module,
             if val_dl:
                 model.eval()
                 batch_pbar.reset(total=len(val_dl))
-                with torch.no_grad():
+                with torch.no_grad(), autocast():
                     for batch, (X, y) in enumerate(val_dl):
                         X = X.to(device)
                         y = y.to(device)

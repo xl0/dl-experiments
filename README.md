@@ -16,8 +16,8 @@ Experiments in Deep Learning and Neural Networks
     - [ ] Overfit ImageNet with dropout
 - [ ] Training 2
     - [x] W&B logging
-    - [ ] AMP
-    - [ ] Gradient Accumulation
+    - [x] AMP
+    - [x] Gradient Accumulation
     - [ ] Multiple GPUs
     - [ ] Data Augmentaiton as in paper
     - [ ] Inference time augmentation
@@ -33,6 +33,8 @@ VGG11 can't train at all with the paper's original parameter intialization, but 
 Runs
 - Overfit on ImageNet in 6 epochs (glorot, dropout=0, wd, no augmentation):
 https://wandb.ai/xl0/vgg/runs/30zipp5v
+
+
 
 
 

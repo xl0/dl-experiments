@@ -2,7 +2,7 @@
 """
 # %%
 # from typing import Tuple, Any, Optional, Sequence, Iterator
-
+import os
 import json
 import torch
 from torch.utils.data import DataLoader, Sampler, RandomSampler
@@ -98,9 +98,16 @@ def get_imagenet_dataloaders(data_dir, cls_json=None, bs=8, val_bs=None,
         train_dl = DataLoader(dataset=train_ds, batch_size=bs,
                         sampler=sampler, num_workers=6, drop_last=True)
     else:
-        train_dl = DataLoader(dataset=train_ds, batch_size=bs,
-                        shuffle=True, num_workers=6, drop_last=True)
-        val_dl = DataLoader(dataset=val_ds, batch_size=val_bs, shuffle=False, num_workers=6)
+        train_dl = DataLoader( dataset=train_ds,
+                            batch_size=bs,
+                            shuffle=True,
+                            num_workers=min(os.cpu_count() or 1, 16),
+                            drop_last=True)
+
+        val_dl = DataLoader(dataset=val_ds,
+                            batch_size=val_bs,
+                            shuffle=False,
+                            num_workers=min(os.cpu_count() or 1, 16))
 
 
     return train_dl, val_dl
@@ -112,7 +119,7 @@ def get_mnist_dataloaders(data_dir, bs=8, resize=224,
     """
 
     tfm_list = []
-    if resize != None:
+    if resize is not None:
         tfm_list.append(torchvision.transforms.Resize((resize, resize)))
     tfm_list.append(torchvision.transforms.ToTensor())
 
