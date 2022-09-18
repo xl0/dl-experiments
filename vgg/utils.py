@@ -27,7 +27,9 @@ def metrics_names_pretty(metrics):
     Return an str with the names of the metrics, extended to at least 8 characters
     """
 
-    pretty = [name + " " * (8 - len(name)) for name in metrics.keys()]
+    names = filter(lambda x: x[0] != "_", metrics.keys())
+
+    pretty = [name + " " * (8 - len(name)) for name in names]
     return " ".join(pretty)
 
 def metrics_last_pretty(metrics):
@@ -37,18 +39,19 @@ def metrics_last_pretty(metrics):
     """
     out = ""
     for name, value in metrics.items():
-        if value:
-            value = value[-1]
-            if isinstance(value, int):
-                value = str(value)[:9]
-            elif isinstance(value, float):
-                value = (f"{value:.6f}")[:9]
-            else:
-                value = str(value)[:9]
+        if name[0] != "_":
+            if value:
+                value = value[-1]
+                if isinstance(value, int):
+                    value = str(value)[:9]
+                elif isinstance(value, float):
+                    value = (f"{value:.6f}")[:9]
+                else:
+                    value = str(value)[:9]
 
-            out += value + " " * (max(len(name), 8) - len(value) + 1)
-        else:
-            out += " " * (max(len(name), 8) + 1)
+                out += value + " " * (max(len(name), 8) - len(value) + 1)
+            else:
+                out += " " * (max(len(name), 8) + 1)
 
     return out
 

@@ -56,15 +56,23 @@ class IndexSampler(Sampler):
 
 
 def get_imagenet_dataloaders(data_dir, cls_json=None, bs=8, val_bs=None,
-                            resize=224,
+                            resize=224, norm=True, grad_accum=1,
                             overfit_batches=None, overfit_len=10000):
     """Get some images
     """
-    transforms = torchvision.transforms.Compose([
-        torchvision.transforms.Resize((resize, resize)),
-        torchvision.transforms.ToTensor(),
-        # torchvision.transforms.Normalize(mean=[0.4703, 0.4471, 0.4075], std=[1., 1., 1.]),
-    ])
+
+    transform_list = [ ]
+    if resize:
+        transform_list.append(torchvision.transforms.Resize((resize, resize)))
+
+    transform_list.append(torchvision.transforms.ToTensor())
+    if norm:
+        transform_list.append(torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                                std=[0.229, 0.224, 0.225]))
+
+    transforms = torchvision.transforms.Compose(
+        transform_list
+    )
 
     train_ds = ImageNet(root=data_dir+"/train", class_json=cls_json, transform=transforms)
     val_ds = ImageNet(root=data_dir+"/val", class_json=cls_json, transform=transforms)
@@ -76,24 +84,24 @@ def get_imagenet_dataloaders(data_dir, cls_json=None, bs=8, val_bs=None,
     if not val_bs:
         val_bs = bs*2
 
-
     g_perm = torch.Generator()
     g_perm.manual_seed(69)
 
+    val_dl = None
     if overfit_batches:
+        print(f"Overfit on {overfit_batches} batches ({overfit_batches*grad_accum*bs} samples) instead of training")
+        overfit_batches *= grad_accum # If we do grad accum, bs is a fraction of what was asked
+
         indices = torch.randperm(len(train_ds), generator=g_perm)[:bs*overfit_batches]
         indices = indices.repeat(overfit_len//(bs*overfit_batches))
         sampler = IndexSampler(indices)
+        train_dl = DataLoader(dataset=train_ds, batch_size=bs,
+                        sampler=sampler, num_workers=6, drop_last=True)
     else:
-        indices = torch.randperm(len(train_ds), generator=g_perm)
-        sampler = RandomSampler(indices)
-
-    train_dl = DataLoader(dataset=train_ds, batch_size=bs,
-                            sampler=sampler, num_workers=6, drop_last=True)
-
-    val_dl = None
-    if not overfit_batches:
+        train_dl = DataLoader(dataset=train_ds, batch_size=bs,
+                        shuffle=True, num_workers=6, drop_last=True)
         val_dl = DataLoader(dataset=val_ds, batch_size=val_bs, shuffle=False, num_workers=6)
+
 
     return train_dl, val_dl
 
@@ -102,11 +110,17 @@ def get_mnist_dataloaders(data_dir, bs=8, resize=224,
                         val_bs=None, overfit_batches=None, overfit_len=10000):
     """Get some numbers
     """
-    transforms = torchvision.transforms.Compose([
-        torchvision.transforms.ToTensor(),
-        torchvision.transforms.Resize((resize, resize)),
+
+    tfm_list = []
+    if resize != None:
+        tfm_list.append(torchvision.transforms.Resize((resize, resize)))
+    tfm_list.append(torchvision.transforms.ToTensor())
+
+
+    transforms = torchvision.transforms.Compose(
+        tfm_list
         # torchvision.transforms.Normalize(mean=[0.4703, 0.4471, 0.4075], std=[1., 1., 1.]),
-    ])
+    )
 
     train_ds = torchvision.datasets.MNIST(root=data_dir,
                                             download=True,
@@ -120,6 +134,7 @@ def get_mnist_dataloaders(data_dir, bs=8, resize=224,
     g_perm.manual_seed(69)
 
     if overfit_batches:
+        raise NotImplementedError
         indices = torch.randperm(len(train_ds), generator=g_perm)[:bs*overfit_batches]
         indices = indices.repeat(overfit_len//(bs*overfit_batches))
         sampler = IndexSampler(indices)

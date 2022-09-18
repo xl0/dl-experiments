@@ -1,6 +1,6 @@
+"""Neural Network Trainer"""
 # %%
 
-import argparse
 from collections import defaultdict
 import time
 
@@ -13,12 +13,12 @@ import torch
 import torch.nn as nn
 # import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import torchvision
+# import torchvision
 
 from tqdm.autonotebook import tqdm
 
 # from torchinfo import summary
-import visdom
+# import visdom
 import wandb
 
 import utils
@@ -53,170 +53,198 @@ def train(model: nn.Module,
 
     Returns:
         History dictionary
-
     """
     epoch_metrics = defaultdict(list)
     iter_metrics = defaultdict(list)
 
-    epoch_metrics["epoch"]
-    epoch_metrics["train_loss"]
-    epoch_metrics["train_acc"]
-    epoch_metrics["val_loss"]
-    epoch_metrics["val_acc"]
-    epoch_metrics["time"]
+    # epoch_metrics["epoch"]
+    # epoch_metrics["train_loss"]
+    # epoch_metrics["train_acc"]
+    # epoch_metrics["val_loss"]
+    # epoch_metrics["val_acc"]
+    # epoch_metrics["time"]
 
-    iter_metrics["batch"]
-    iter_metrics["epoch"]
-    iter_metrics["train_loss"]
-    iter_metrics["train_acc"]
+    # iter_metrics["batch"]
+    # iter_metrics["epoch"]
+    # iter_metrics["train_loss"]
+    # iter_metrics["train_acc"]
 
+
+    wandb.define_metric("step_*", step_metric="_step")
+    wandb.define_metric("*", step_metric="epoch")
 
     epoch_pbar = tqdm(desc="Training", total=epochs, unit="Epoch")
     batch_pbar = tqdm(unit="batch")
 
     device = next(model.parameters()).device #pylint: disable=redefined-outer-name
-    epoch_pbar.write(f"Running on {device}")
-
 
     # Just in case
-    # optimizer.zero_grad()
+    optimizer.zero_grad()
+    step = 0
 
-    for epoch in range(start_epoch, start_epoch + epochs):
-        ### Train
+    # We only run a small piece with torch.enable_grad()
 
-        batch_pbar.reset(total=len(train_dl))
-        batch_pbar.set_description(f"Epoch {epoch - start_epoch +1}/{epochs}")
+    with torch.no_grad():
+        for epoch in range(start_epoch, start_epoch + epochs):
+            batch_pbar.reset(total=len(train_dl) // grad_accum)
+            batch_pbar.set_description(f"Epoch {epoch}/{epochs}")
 
-        epoch_train_loss = 0.
-        epoch_val_loss = 0.
+            epoch_train_loss = 0.
+            epoch_val_loss = 0.
 
-        n_train_correct = 0
-        n_train_samples = 0
-        n_train_batches = 0
+            n_train_correct = 0
+            n_train_samples = 0
 
-        n_val_correct = 0
-        n_val_samples = 0
-        n_val_batches = 0
+            n_val_correct = 0
+            n_val_samples = 0
 
-        start_time = time.time()
+            start_time = time.time()
 
-        model.train()
-        for batch, (X, y) in enumerate(train_dl):
-            X = X.to(device)
-            y = y.to(device)
-            y_hat = model(X)
-            loss = loss_fn(y_hat, y)
+            virt_batch_loss = 0.
+            virt_batch_correct = 0
+            virt_batch_samples = 0
 
-            loss.backward()
+            model.train()
+            for batch, (X, y) in enumerate(train_dl):
+                X = X.to(device)
+                y = y.to(device)
 
-            optimizer.step()
-
-
-
-            with torch.no_grad():
-                # print(y)
-                # print(y_hat)
-
-                # for name, p in model.named_parameters():
-                #     print(f"Param: {name}: min={p.min():.4f} mean={p.mean():.4f} var={p.var():.4f} max={p.max():.4f}")
-
-                # for name, p in model.named_parameters():
-                #     grad = p.grad
-                #     print(f"Grad: {name}: min={grad.min():.4f} mean={grad.mean():.4f} var={grad.var():.4f} max={grad.max():.4f}")
-
-                acc = accuracy(y_hat, y).item()
-
-                iter_metrics["batch"].append(batch)
-                iter_metrics["epoch"].append(epoch)
-                iter_metrics["train_loss"].append(loss.item())
-                iter_metrics["train_acc"].append(acc)
-
-                wandb.log({
-                    "epoch" : epoch,
-                    "batch" : batch,
-                    "train_loss" : loss,
-                    "train_acc" : acc
-                })
-
-
-                n_train_batches = batch
-                n_train_correct += n_correct(y_hat, y).item()
-                n_train_samples += y.shape[0]
-
-                epoch_train_loss += loss.item()
-
-                batch_pbar.set_postfix_str(f"train_acc: {acc:.4f} train_loss: {loss.item():.4f}")
-
-                batch_pbar.update()
-
-            optimizer.zero_grad()
-
-
-        epoch_metrics["epoch"].append(epoch)
-        epoch_metrics["train_loss"].append(epoch_train_loss / (n_train_batches + 1))
-        epoch_metrics["train_acc"].append(n_train_correct / n_train_samples)
-
-        wandb.log({
-            "epoch" : epoch,
-            "train_loss" : epoch_train_loss / (n_train_batches + 1),
-            "train_acc" : n_train_correct / n_train_samples
-        })
-
-        train_end_time = time.time()
-
-        if val_dl:
-            model.eval()
-            batch_pbar.reset(total=len(val_dl))
-            with torch.no_grad():
-                for batch, (X, y) in enumerate(val_dl):
-                    X = X.to(device)
-                    y = y.to(device)
-
+                with torch.enable_grad():
                     y_hat = model(X)
                     loss = loss_fn(y_hat, y)
+                    loss = loss / grad_accum
+                    loss.backward()
+
+                # Accumulate batch metrics
+                virt_batch_loss += loss.item()
+                virt_batch_correct += n_correct(y_hat, y).item()
+                virt_batch_samples += y.shape[0]
+
+                if (batch+1) % grad_accum == 0 or (batch+1) == len(train_dl):
+                    step += 1
+                    # batch_pbar.write(f"batch {batch}, step {step}")
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+
+                    virt_batch_acc = virt_batch_correct / virt_batch_samples
+
+                    # For per-epoch stats
+                    epoch_train_loss += virt_batch_loss
+                    n_train_correct += virt_batch_correct
+                    n_train_samples += virt_batch_samples
 
 
-                    acc = accuracy(y_hat.detach(), y).item()
-                    n_val_batches = batch
-                    n_val_correct += n_correct(y_hat.detach(), y).item()
-                    n_val_samples += y.shape[0]
-                    epoch_val_loss += loss.item()
+                    iter_stats = {
+                        "epoch" : epoch,
+                        "batch" : (batch + 1) // grad_accum,
+                        "step" : step,
+                        "step_train_loss" : virt_batch_loss,
+                        "step_train_acc" : virt_batch_acc
+                    }
 
-                    batch_pbar.set_postfix_str(f"val_acc: {acc:.4f} val_loss: {loss.item():.4f}")
+
+                    wandb.log(iter_stats, step=step)
+
+                    for key, val in iter_stats.items():
+                        iter_metrics[key].append(val)
+
+                    batch_pbar.set_postfix_str(f"train_acc: {virt_batch_acc:.4f} train_loss: {virt_batch_loss:.4f}")
                     batch_pbar.update()
 
-            epoch_metrics["val_loss"].append(epoch_val_loss / (n_val_batches + 1))
-            epoch_metrics["val_acc"].append(n_val_correct / n_val_samples)
-            wandb.log({
+                    virt_batch_loss = 0
+                    virt_batch_correct = 0
+                    virt_batch_samples = 0
+
+            train_end_time = time.time()
+
+            # -1 to log the epoch stats at the last training step of the previous epoch
+            # step = epoch * len(train_dl) - 1
+            epoch_stats = {
                 "epoch" : epoch,
-                "val_loss" : epoch_val_loss / (n_val_batches + 1),
-                "val_acc" : n_val_correct / n_val_samples
-            })
+                "train_loss": epoch_train_loss / len(train_dl),
+                "train_acc": n_train_correct / n_train_samples,
+                "train_time": tqdm.format_interval(train_end_time - start_time)
+            }
+
+            # Log metrics here in case we crash during validation
+            wandb.log(epoch_stats, step=step)
+
+            # epoch_metrics["epoch"].append(epoch)
+            # epoch_metrics["train_loss"].append(epoch_train_loss / (n_train_batches + 1))
+            # epoch_metrics["train_acc"].append(n_train_correct / n_train_samples)
+
+            if val_dl:
+                model.eval()
+                batch_pbar.reset(total=len(val_dl))
+                with torch.no_grad():
+                    for batch, (X, y) in enumerate(val_dl):
+                        X = X.to(device)
+                        y = y.to(device)
+
+                        y_hat = model(X)
+                        loss = loss_fn(y_hat, y).item()
+                        acc = accuracy(y_hat.detach(), y).item()
+
+                        n_val_correct += n_correct(y_hat.detach(), y).item()
+                        n_val_samples += y.shape[0] # In case we get a partial batch
+                        epoch_val_loss += loss
+
+                        batch_pbar.set_postfix_str(f"val_acc: {acc:.4f} val_loss: {loss:.4f}")
+                        batch_pbar.update()
+
+                    val_end_time = time.time()
+
+                    epoch_stats |= {
+                        "val_loss": epoch_val_loss / len(val_dl),
+                        "val_acc": n_val_correct / n_val_samples,
+                        "val_time": tqdm.format_interval(val_end_time - train_end_time)
+                    }
+
+                # epoch_metrics["epoch_val_loss"].append(epoch_val_loss / (n_val_batches + 1))
+                # epoch_metrics["epoch_val_acc"].append(n_val_correct / ())
 
 
-        # # batch_pbar.close()
 
-        val_end_time = time.time()
 
-        epoch_metrics["time"].append(tqdm.format_interval(val_end_time - start_time))
-        epoch_metrics["train_time"].append(tqdm.format_interval(train_end_time - start_time))
-        epoch_metrics["val_time"].append(tqdm.format_interval(val_end_time - train_end_time))
+                # wandb.log({
+                #     "epoch" : epoch,
+                #     "val_loss" : epoch_val_loss / (n_val_batches + 1),
+                #     "val_acc" : n_val_correct / n_val_samples,
+                #     "epoch_train_loss" : epoch_train_loss / (n_train_batches + 1),
+                #     "epoch_train_acc" : n_train_correct / n_train_samples
+                # })
 
-        wandb.log({
-            "epoch" : epoch,
-            "time" : epoch_metrics["time"][-1],
-            "train_time" : epoch_metrics["train_time"][-1],
-            "val_time": epoch_metrics["val_time"][-1],
-        })
 
-        epoch_pbar.update()
+            # # batch_pbar.close()
 
-        if epoch == 1:
-            tqdm.write(utils.metrics_names_pretty(epoch_metrics))
-        tqdm.write(utils.metrics_last_pretty(epoch_metrics))
+            epoch_stats |= {
+                "time": tqdm.format_interval(time.time() - start_time)
+            }
 
-    batch_pbar.close()
-    epoch_pbar.close()
+            wandb.log(epoch_stats, step=step)
+
+            for key, val in epoch_stats.items():
+                epoch_metrics[key].append(val)
+
+            # epoch_metrics["time"].append(tqdm.format_interval(val_end_time - start_time))
+            # epoch_metrics["train_time"].append(tqdm.format_interval(train_end_time - start_time))
+            # epoch_metrics["val_time"].append(tqdm.format_interval(val_end_time - train_end_time))
+
+            # wandb.log({
+            #     "epoch" : epoch,
+            #     "time" : epoch_metrics["time"][-1],
+            #     "train_time" : epoch_metrics["train_time"][-1],
+            #     "val_time": epoch_metrics["val_time"][-1],
+            # })
+
+            epoch_pbar.update()
+
+            if epoch == 1:
+                tqdm.write(utils.metrics_names_pretty(epoch_metrics))
+            tqdm.write(utils.metrics_last_pretty(epoch_metrics))
+
+        batch_pbar.close()
+        epoch_pbar.close()
 
 
     return epoch_metrics, iter_metrics

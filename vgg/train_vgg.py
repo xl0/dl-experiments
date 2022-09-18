@@ -3,25 +3,15 @@
 # %%
 
 import argparse
-import os
+
+from collections import defaultdict
+
 import json
 import torch
 import torch.nn as nn
-# import torch.nn.functional as F
-import torchvision
-from torchvision.utils import make_grid
-import torchvision.transforms.functional as tF
 
-
-# from tqdm.autonotebook import tqdm
-
-from torchinfo import summary
-from matplotlib import pyplot as plt
-
-from types import SimpleNamespace
-
+# import visdom
 import wandb
-import visdom
 
 import datasets
 import vgg
@@ -31,8 +21,17 @@ import train
 
 # %%
 
-# Can be overridden by command line arguments
-config = SimpleNamespace(
+class Config(defaultdict):
+    """A dict-like structure with attribute keys"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(lambda : None, *args, **kwargs)
+        self.__dict__ = self
+    def __getattr__(self, k):
+        return self[k] if k in self else None
+
+
+# Can be overridden by command line arguments or wandb
+config = Config(
     # Dataset
     # data_dir="/home/xl0/work/ml/datasets/MNIST",
     # data_dir="/home/xl0/work/ml/datasets/ImageNet",
@@ -42,6 +41,7 @@ config = SimpleNamespace(
     # dataset="ImageNet",
     dataset="imagenette2",
     resize=128,
+    norm=True,
 
     # init="paper_normal",
     # init="pytorch",
@@ -58,25 +58,37 @@ config = SimpleNamespace(
     momentum=0.9,
 
     bs=256,
+    # grad_accum=1,
     # bs=32,
     epochs=100,
 
     overfit_batches=0,
     overfit_len=50000,
 
-    visdom=True,
-    wandb=False,
+    visdom=False,
+    wandb=True,
+    wandb_mode="online",
+    # wandb_offline=False,
     wandb_project="vgg"
-
 )
 
 # %%
+
+# Argparse: Allow multi-line help entries and show default values
+class Formatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+    """Argparse formatter, inherits from:
+        - argparse.RawTextHelpFormatter - allows \\n in help.
+        - pargarse.ArgumentDefaultsHelpFormatter - show defaults.
+    """
+
 parser = argparse.ArgumentParser(description='Train VGG on the ImageNet Dataset',
-                                formatter_class=argparse.RawTextHelpFormatter)
+                                formatter_class=Formatter)
 
 parser_ds = parser.add_argument_group("Dataset parameters")
-parser_ds.add_argument("--dataset", type=str, metavar="DATASET", required=True,
-    help="Dataset to use: [MNIST, ImageNet, imagenette2]")
+parser_ds.add_argument("--dataset", type=str, metavar="DATASET",
+    default=config.dataset,
+    choices=["MNIST", "ImageNet", "imagenette2"],
+    help="Dataset to use")
 parser_ds.add_argument("--data_dir", type=str, metavar="DIR", required=True,
     help="Path to the ImageNet dataset")
 parser_ds.add_argument("--cls_json", type=str, metavar="file.json",
@@ -87,20 +99,24 @@ parser_ds.add_argument("--cls_json", type=str, metavar="file.json",
 parser_aug = parser.add_argument_group("Data Augmentation")
 parser_aug.add_argument("--resize", type=int, default=config.resize,
     help="Resize the images to this size")
+parser_aug.add_argument("--norm", type=bool, default=config.norm,
+    action=argparse.BooleanOptionalAction,
+    help="Apply Imagenet mean/var normalization")
 
 parser_model = parser.add_argument_group("Model paramters")
 parser_model.add_argument("--dropout", type=float, default=config.dropout,
     help="Dropout probability for FC layers")
 parser_model.add_argument("--init", type=str, default=config.init,
-    help="Inintilize weights: [paper_normal, paper_glorot, pytorch]")
-
+    choices=["paper_normal", "paper_glorot", "pytorch"],
+    help="Inintilize weights")
 
 parser_optim = parser.add_argument_group("Optimization paramters")
 parser_optim.add_argument("--lr", type=float, metavar="LR", default=config.lr,
     help="Base learning rate")
 parser_optim.add_argument("--optim", type=str, default=config.optim,
+    choices=["SGD", "Agam"],
     help="Optimizer")
-parser_optim.add_argument('--weight-decay', type=float, default=config.weight_decay, metavar="WD",
+parser_optim.add_argument('--weight_decay', type=float, default=config.weight_decay, metavar="WD",
     help='Weight decay')
 parser_optim.add_argument("--momentum", type=float, default=config.momentum, metavar="MOM",
     help="Momentum")
@@ -109,20 +125,33 @@ parser_optim.add_argument("--epochs", type=int, default=config.epochs, metavar="
     help="Number of epochs to train")
 parser_optim.add_argument("--bs", type=int, default=config.bs, metavar="N",
     help="Training Batch size")
-parser_optim.add_argument("--overfit-batches", type=int, metavar="N",
+parser_optim.add_argument("--val_bs", type=int, metavar="N",
+    help="Valudation Batch size (default: bs*2)")
+parser_optim.add_argument("--grad_accum", type=int, default=config.grad_accum, metavar="N",
+    help="Split batches into N chunks, forward/back-prob on at a time, optimizer step once")
+parser_optim.add_argument("--overfit_batches", type=int, metavar="N",
     default=config.overfit_batches,
     help="Overfit on N batches (from the dataset) instead of trainig. 0 Means train normally")
-parser_optim.add_argument("--overfit-len", type=int, default=config.overfit_len, metavar="N",
+parser_optim.add_argument("--overfit_len", type=int, default=config.overfit_len, metavar="N",
     help="If in overfit mode, set the virtual Epoch to N \"samples\"")
 
 parser_log = parser.add_argument_group("Logging")
 parser_log.add_argument("--visdom", type=bool, default=config.visdom,
+    action=argparse.BooleanOptionalAction,
     help="Use visdom (https://github.com/fossasia/visdom) for visualization")
 parser_log.add_argument("--wandb", type=bool, default=config.wandb,
+    action=argparse.BooleanOptionalAction,
     help="Log metrics to W&B")
-parser_log.add_argument("--wandb-project", type=str, metavar="NAME",
+parser_log.add_argument("--wandb_mode", type=str, default=config.wandb_mode,
+    choices=["online", "offline", "disabled"],
+    help="W&B mode")
+parser_log.add_argument("--wandb_project", type=str, metavar="NAME",
     default=config.wandb_project,
     help="W&B project name")
+parser_log.add_argument("--wandb_run", type=str, metavar="RUN",
+    help="W&B run name (autogenerated if not specified)")
+parser_log.add_argument("--fold", type=int,
+    help="Pass a number if you want to run it multiple times")
 
 
 def init_weights_paper_normal(module):
@@ -150,30 +179,54 @@ if utils.is_notebook():
 else:
     args = parser.parse_args()
 
-if not args.wandb:
-    os.environ["WANDB_MODE"] = "offline"
 
-run = wandb.init(config=args, project=args.wandb_project)
+if not args.wandb:
+    args.wandb_mode = "disabled"
+
+run = wandb.init(config=args, project=args.wandb_project, name=args.wandb_run, mode=args.wandb_mode)
 config = wandb.config
 
-print(args)
 print(config)
 
+if config.grad_accum != 1:
+    assert config.bs % config.grad_accum == 0
+    print(f"Accumulating gradient over {config.grad_accum} chunks")
+    print(f"Chunk size is {config.bs // config.grad_accum}")
+
+if "val_bs" not in config:
+    config.val_bs = (config.bs // config.grad_accum)*2
+
+
+# wandb.finish()
+# os.exit(0)
 
 vis = None
 if config.visdom:
-    vis = visdom.Visdom()
+    raise NotImplementedError
+    # vis = visdom.Visdom()
 
+args.bs = args.bs // args.grad_accum
 if config.dataset == "MNIST":
-    train_dl, val_dl = datasets.get_mnist_dataloaders(config.data_dir, config.bs,
-                                            resize=config.resize,
-                                            overfit_batches=config.overfit_batches,
-                                            overfit_len=config.overfit_len)
+    train_dl, val_dl = datasets.get_mnist_dataloaders(
+                                    data_dir=config.data_dir,
+                                    bs=config.bs // config.grad_accum,
+                                    val_bs=config.val_bs,
+
+                                    resize=config.resize,
+
+                                    overfit_batches=config.overfit_batches,
+                                    overfit_len=config.overfit_len)
+
 elif config.dataset in  ["ImageNet", "imagenette2"]:
-    train_dl, val_dl = datasets.get_imagenet_dataloaders(config.data_dir, config.cls_json,
-                                            config.bs, resize=config.resize,
-                                            overfit_batches=config.overfit_batches,
-                                            overfit_len=config.overfit_len)
+    train_dl, val_dl = datasets.get_imagenet_dataloaders(
+                                    data_dir=config.data_dir, cls_json=config.cls_json,
+                                    bs=config.bs // config.grad_accum,
+                                    val_bs=config.val_bs,
+                                    resize=config.resize,
+                                    norm=config.norm,
+                                    grad_accum=config.grad_accum,
+                                    overfit_batches=config.overfit_batches,
+                                    overfit_len=config.overfit_len)
 else:
     raise ValueError(f"Unknown dataset {config.dataset}")
 
@@ -203,12 +256,11 @@ with torch.no_grad():
     else:
         raise ValueError(f"Unknown init method {config.init}")
 
-if config.dropout != 0.5:
-    for module in model.modules():
-        if isinstance(module, nn.Dropout):
-            print(f"Setting dropout to {config.dropout}")
-            module.p = config.dropout
 
+for module in model.modules():
+    if isinstance(module, nn.Dropout):
+        print(f"Setting dropout to {config.dropout}")
+        module.p = config.dropout
 
 if config.optim == "SGD":
     optim = torch.optim.SGD(model.parameters(),
@@ -224,6 +276,8 @@ else:
 
 criterion = nn.CrossEntropyLoss()
 
+if "grad_accum" not in config:
+    config.grad_accum = 1
 
 
 epoch_metrics, iter_metrics = train.train(model=model,
@@ -231,7 +285,8 @@ epoch_metrics, iter_metrics = train.train(model=model,
                                             optimizer=optim,
                                             loss_fn=criterion,
                                             train_dl=train_dl,
-                                            val_dl=val_dl)
+                                            val_dl=val_dl,
+                                            grad_accum=config.grad_accum)
 
 wandb.finish()
 
