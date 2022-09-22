@@ -13,19 +13,17 @@ Experiments in Deep Learning and Neural Networks
     - [x] Overfit imagenette
     - [x] Overgit 1 batch ImageNet
     - [x] Overfit ImageNet
-    - [ ] Overfit ImageNet with dropout
+    - [x] Overfit ImageNet with dropout
 - [ ] Training 2
     - [x] W&B logging
     - [x] AMP
     - [x] Gradient Accumulation
     - [ ] Multiple GPUs
-    - [ ] Data Augmentaiton as in paper
+    - [X] Data Augmentaiton as in paper
     - [ ] Inference time augmentation
 - [ ] Testing 2 (VGG11)
-    - [ ] Train on imagenette
+    - [X] Train on imagenette
     - [ ] Train on ImageNet
-
-
 
 
 VGG11 can't train at all with the paper's original parameter intialization, but works fine with Glorot initializaiton that they also discovered worked better.

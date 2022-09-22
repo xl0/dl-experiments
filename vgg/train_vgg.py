@@ -40,30 +40,31 @@ config = Config(
     # dataset="MNIST",
     # dataset="ImageNet",
     dataset="imagenette2",
-    resize=128,
-    norm=True,
+
+    da_s=384,
+    da_crop=256,
+    da_norm=True,
+    da_hflip=True,
+    da_color=0.1,
 
     # init="paper_normal",
     # init="pytorch",
     init="paper_glorot",
-    dropout=0.,
+    dropout=0.5,
 
     # Optimizer
     optim="SGD",
     lr=0.01,
-    # weight_decay=0, #4e-5,
-    weight_decay=5e-4, #4e-5,
-    #weight_decay=4e-5,
+    weight_decay=5e-4,
     momentum=0.9,
 
-    bs=256,
+    bs=32,
     grad_accum=1,
     fp16=True,
     grad_scaling=True,
-    # bs=32,
     epochs=100,
 
-    overfit_batches=0,
+    overfit_batches=1,
     overfit_len=50000,
 
     visdom=False,
@@ -77,14 +78,12 @@ config = Config(
 
 # Argparse: Allow multi-line help entries and show default values
 class Formatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
-    """Argparse formatter, inherits from:
-        - argparse.RawTextHelpFormatter - allows \\n in help.
-        - pargarse.ArgumentDefaultsHelpFormatter - show defaults.
-    """
+    """Allow multi-line help entries and show default values"""
+
 
 parser = argparse.ArgumentParser(description='Train VGG on the ImageNet Dataset',
                                 formatter_class=Formatter)
-
+## DATASET
 parser_ds = parser.add_argument_group("Dataset parameters")
 parser_ds.add_argument("--dataset", type=str, metavar="DATASET",
     default=config.dataset,
@@ -96,14 +95,22 @@ parser_ds.add_argument("--cls_json", type=str, metavar="file.json",
     help="""Path the the class labels json file.
     See https://github.com/anishathalye/imagenet-simple-labels""")
 
-
+## DATA AUGMENTATION / TRANSFORMS
 parser_aug = parser.add_argument_group("Data Augmentation")
-parser_aug.add_argument("--resize", type=int, default=config.resize,
-    help="Resize the images to this size")
-parser_aug.add_argument("--norm", type=bool, default=config.norm,
+parser_aug.add_argument("--da_crop", type=int, default=config.da_crop,
+    help="Resize the images to this size (final step)")
+parser_aug.add_argument("--da_norm", type=bool, default=config.da_norm,
     action=argparse.BooleanOptionalAction,
     help="Apply Imagenet mean/var normalization")
+parser_aug.add_argument("--da_hflip_p", type=float, default=config.da_hflip, metavar="p",
+    help="Flip images horizontally with probability p")
+parser_aug.add_argument("--da_s", type=int, default=config.da_s, metavar="S",
+    help="The S parameter for resizing befeore the Random Crop")
+parser_aug.add_argument("--da_color", type=float, default=config.da_color, metavar="C",
+    help="XXXX")
 
+
+## MODEL
 parser_model = parser.add_argument_group("Model paramters")
 parser_model.add_argument("--dropout", type=float, default=config.dropout,
     help="Dropout probability for FC layers")
@@ -111,6 +118,7 @@ parser_model.add_argument("--init", type=str, default=config.init,
     choices=["paper_normal", "paper_glorot", "pytorch"],
     help="Inintilize weights")
 
+## OPT
 parser_optim = parser.add_argument_group("Optimization paramters")
 parser_optim.add_argument("--lr", type=float, metavar="LR", default=config.lr,
     help="Base learning rate")
@@ -208,22 +216,28 @@ if config.visdom:
     raise NotImplementedError
     # vis = visdom.Visdom()
 
-if config.dataset == "MNIST":
-    train_dl, val_dl = datasets.get_mnist_dataloaders(
-                                    data_dir=config.data_dir,
-                                    bs=config.bs // config.grad_accum,
-                                    val_bs=config.val_bs,
-                                    resize=config.resize,
-                                    overfit_batches=config.overfit_batches,
-                                    overfit_len=config.overfit_len)
+# %%
 
-elif config.dataset in  ["ImageNet", "imagenette2"]:
+transforms = datasets.make_transforms(s=config.da_s,
+                                    crop=config.da_crop,
+                                    norm=config.da_norm)
+# transforms = None
+# if config.dataset == "MNIST":
+#     pass
+#     # train_dl, val_dl = datasets.get_mnist_dataloaders(
+#     #                                 data_dir=config.data_dir,
+#     #                                 bs=config.bs // config.grad_accum,
+#     #                                 val_bs=config.val_bs,
+#     #                                 transforms=transforms,
+#     #                                 overfit_batches=config.overfit_batches,
+#     #                                 overfit_len=config.overfit_len)
+
+if config.dataset in  ["ImageNet", "imagenette2"]:
     train_dl, val_dl = datasets.get_imagenet_dataloaders(
                                     data_dir=config.data_dir, cls_json=config.cls_json,
                                     bs=config.bs // config.grad_accum,
                                     val_bs=config.val_bs,
-                                    resize=config.resize,
-                                    norm=config.norm,
+                                    transforms=transforms,
                                     grad_accum=config.grad_accum,
                                     overfit_batches=config.overfit_batches,
                                     overfit_len=config.overfit_len)
@@ -233,7 +247,7 @@ else:
 data_shape=train_dl.dataset[0][0].shape
 
 n_channels=data_shape[0]
-n_classes=len(train_dl.dataset.classes)
+n_classes=len(train_dl.dataset.classes)   # type: ignore
 
 
 device = torch.device("cuda")
@@ -318,7 +332,6 @@ with open("results.json", "w+") as f: #pylint: disable=unspecified-encoding
 #                 train_dl=train_dl,
 #                 val_dl=val_dl)
 
-
 # %%
 
 
@@ -356,10 +369,3 @@ with open("results.json", "w+") as f: #pylint: disable=unspecified-encoding
 #                     criterion=criterion,
 #                     train_dl=train_dl,
 #                     val_dl=val_dl)
-
-
-
-
-
-
-# %%
